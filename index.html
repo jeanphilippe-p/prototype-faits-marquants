@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Faits Marquants</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">FM</span>
+      <div>
+        <div class="brand-title">Faits Marquants</div>
+        <div class="brand-sub">Exploitation &amp; Maintenance · remontée hebdomadaire</div>
+      </div>
+    </div>
+
+    <nav class="roles" role="tablist" aria-label="Choix de la vue">
+      <button role="tab" data-role="collab">Collaborateur</button>
+      <button role="tab" data-role="manager">Manager N-1</button>
+      <button role="tab" data-role="directeur">Directeur N</button>
+      <button role="tab" data-role="lecteur">Synthèse N+1</button>
+    </nav>
+
+    <div class="top-tools">
+      <label class="identity" title="Nom utilisé dans l'historique (pas d'authentification dans le prototype)">
+        <span>Je suis</span>
+        <input id="identity" type="text" placeholder="Nom – Service" autocomplete="off">
+      </label>
+      <span id="conn" class="conn" title="Source des données">…</span>
+      <div class="menu">
+        <button id="menuBtn" class="btn ghost" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <div id="menuList" class="menu-list" hidden>
+          <button data-action="refresh">Actualiser</button>
+          <button data-action="seed">Générer des données de test</button>
+          <button data-action="toggle-mode">Basculer Supabase / local</button>
+          <button data-action="wipe" class="danger">Vider toutes les données…</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main id="app">
+    <!-- ========== COLLABORATEUR ========== -->
+    <section class="view" data-view="collab" hidden>
+      <div class="collab-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2 id="formTitle">Nouveau fait marquant</h2>
+            <span class="muted small">Ctrl + Entrée pour enregistrer</span>
+          </div>
+          <form id="fmForm" class="fm-form" autocomplete="off">
+            <input type="hidden" name="id">
+            <div class="row">
+              <label>Semaine<select name="semaine" required></select></label>
+              <label>Zone<select name="zone" required></select></label>
+            </div>
+            <div class="row">
+              <label>Catégorie<select name="categorie" required></select></label>
+              <label>Priorité
+                <div class="seg" id="prioSeg"></div>
+              </label>
+            </div>
+            <label>Titre <span class="count" id="titleCount">0 / 120</span>
+              <input name="titre" maxlength="120" required placeholder="Ex. Arrêt fortuit poste source – remise en service sous 4 h">
+            </label>
+            <label>Description
+              <textarea name="description" rows="5" placeholder="Faits, impact, actions engagées, prochaines étapes…"></textarea>
+            </label>
+            <label>Pièces jointes <span class="muted small">(un lien par ligne, optionnel)</span>
+              <textarea name="pieces_jointes" rows="2" placeholder="https://…"></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="button" class="btn ghost" id="formReset">Annuler</button>
+              <button type="submit" class="btn primary" id="formSubmit">Enregistrer</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Importer depuis Copilot</h2>
+          </div>
+          <p class="muted small">Demandez à Copilot d'exporter vos faits marquants au format du modèle (CSV ou JSON), puis déposez le fichier ici. Les lignes sont vérifiées avant l'import.</p>
+          <div class="import-actions">
+            <button class="btn" data-action="tpl-csv">Télécharger le modèle CSV</button>
+            <button class="btn" data-action="tpl-json">Télécharger le modèle JSON</button>
+            <button class="btn ghost" data-action="copy-prompt">Copier la consigne pour Copilot</button>
+          </div>
+          <label class="drop" id="drop">
+            <input type="file" id="importFile" accept=".csv,.json,.txt,text/csv,application/json" hidden>
+            <span><strong>Choisir un fichier</strong> ou le glisser ici</span>
+            <span class="muted small">.csv (séparateur ; ou ,) ou .json</span>
+          </label>
+          <div id="importPreview"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Mes faits marquants</h2>
+          <label class="check"><input type="checkbox" id="showAllCollab"> Afficher ceux de tous les collaborateurs</label>
+        </div>
+        <div id="collabList" class="card-grid"></div>
+      </div>
+    </section>
+
+    <!-- ========== MANAGER / DIRECTEUR ========== -->
+    <section class="view" data-view="board" hidden>
+      <div class="filters" id="filters"></div>
+      <div class="toolbar" id="toolbar"></div>
+      <div class="board" id="board"></div>
+    </section>
+
+    <!-- ========== SYNTHÈSE N+1 ========== -->
+    <section class="view" data-view="lecteur" hidden>
+      <div class="synth-head">
+        <div>
+          <h2>Synthèse hebdomadaire N+1</h2>
+          <p class="muted small">Uniquement les faits marquants sélectionnés par le Directeur, classés par catégorie.</p>
+        </div>
+        <div class="synth-tools">
+          <label>Semaine <select id="synthWeek"></select></label>
+          <button class="btn" data-action="synth-copy">Copier pour un mail</button>
+          <button class="btn" data-action="synth-html">Télécharger (HTML)</button>
+          <button class="btn" data-action="synth-csv">Exporter CSV</button>
+          <button class="btn primary" data-action="synth-print">Imprimer / PDF</button>
+        </div>
+      </div>
+      <article id="synthesis" class="synthesis"></article>
+    </section>
+  </main>
+
+  <dialog id="modal" class="modal">
+    <div class="modal-inner" id="modalInner"></div>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
