@@ -112,6 +112,7 @@ alter table public.faits_marquants    enable row level security;
 alter table public.acces_utilisateurs enable row level security;
 
 -- Suppression des règles ouvertes de la première version du prototype
+drop policy if exists "Acces libre prototype"  on public.faits_marquants;
 drop policy if exists "prototype_lecture"      on public.faits_marquants;
 drop policy if exists "prototype_creation"     on public.faits_marquants;
 drop policy if exists "prototype_modification" on public.faits_marquants;
