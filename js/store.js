@@ -1,16 +1,7 @@
-// Couche d'accès aux données.
-// Deux modes : "supabase" (base partagée) et "local" (navigateur seul,
-// utile pour une démo hors ligne ou tant que la table n'existe pas).
+// Couche d'accès aux données et à l'authentification (Supabase).
 (function () {
   const cfg = window.FM_CONFIG;
-  const LOCAL_KEY = 'fm_local_data_v1';
-  const MODE_KEY = 'fm_mode';
-
   let client = null;
-  let mode = safeGet(MODE_KEY) === 'local' ? 'local' : 'supabase';
-
-  function safeGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
-  function safeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
 
   function getClient() {
     if (!client) {
@@ -18,31 +9,30 @@
         throw new Error('Le SDK Supabase n\'a pas pu être chargé (CDN inaccessible ?).');
       }
       client = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY, {
-        auth: { persistSession: false },
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
       });
     }
     return client;
   }
 
-  // ---------- Mode local ----------
-  function localAll() {
-    try { return JSON.parse(safeGet(LOCAL_KEY) || '[]'); } catch (e) { return []; }
-  }
-  function localSave(rows) { safeSet(LOCAL_KEY, JSON.stringify(rows)); }
-  function localNextId(rows) { return rows.reduce((m, r) => Math.max(m, r.id), 0) + 1; }
-
   function explain(error) {
     const msg = (error && (error.message || error.hint || error.details)) || String(error);
     const code = error && error.code;
-    if (code === '42P01' || code === 'PGRST205' || /does not exist|Could not find the table/i.test(msg)) {
-      return 'La table « ' + cfg.TABLE + ' » n\'existe pas encore dans Supabase. Exécutez supabase/setup.sql dans le SQL Editor.';
+    if (/EMAIL_NON_AUTORISE|Database error saving new user/i.test(msg)) {
+      return 'Cette adresse n\'est pas (encore) autorisée. Utilisez « Demander un accès » : un administrateur validera votre adresse.';
+    }
+    if (/Invalid login credentials/i.test(msg)) return 'Email ou mot de passe incorrect.';
+    if (/Email not confirmed/i.test(msg)) return 'Adresse pas encore confirmée : cliquez sur le lien reçu par email.';
+    if (/User already registered/i.test(msg)) return 'Un compte existe déjà pour cette adresse : connectez-vous ou utilisez « Mot de passe oublié ».';
+    if (/Password should be at least/i.test(msg)) return 'Le mot de passe doit contenir au moins 8 caractères.';
+    if (/rate limit|too many/i.test(msg)) return 'Trop de tentatives ou d\'emails envoyés. Réessayez dans quelques minutes.';
+    if (code === '42P01' || code === 'PGRST205' || code === 'PGRST202' || /does not exist|Could not find the (table|function)/i.test(msg)) {
+      return 'La base n\'est pas encore installée. Exécutez supabase/setup.sql dans le SQL Editor de Supabase.';
     }
     if (code === '42501' || /row-level security|permission denied/i.test(msg)) {
-      return 'Supabase refuse l\'accès (règles RLS). Exécutez supabase/setup.sql pour ouvrir l\'accès au prototype.';
+      return 'Accès refusé : votre adresse n\'est pas autorisée ou plus autorisée.';
     }
-    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-      return 'Impossible de joindre Supabase (réseau ou URL incorrecte).';
-    }
+    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) return 'Impossible de joindre Supabase (réseau).';
     return msg;
   }
 
@@ -52,49 +42,50 @@
     return data;
   }
 
-  const Store = {
-    get mode() { return mode; },
-    setMode(m) { mode = m; safeSet(MODE_KEY, m); },
+  const Auth = {
+    redirectUrl() { return window.location.origin + window.location.pathname; },
+    async session() { return (await run(getClient().auth.getSession())).session; },
+    onChange(cb) { getClient().auth.onAuthStateChange((event, session) => cb(event, session)); },
+    signIn(email, password) { return run(getClient().auth.signInWithPassword({ email, password })); },
+    signUp(email, password, nom) {
+      return run(getClient().auth.signUp({ email, password, options: { data: { nom }, emailRedirectTo: Auth.redirectUrl() } }));
+    },
+    signOut() { return getClient().auth.signOut(); },
+    resetPassword(email) { return run(getClient().auth.resetPasswordForEmail(email, { redirectTo: Auth.redirectUrl() })); },
+    updatePassword(password) { return run(getClient().auth.updateUser({ password })); },
+    updateName(nom) { return run(getClient().auth.updateUser({ data: { nom } })); },
+    requestAccess(email, nom) { return run(getClient().rpc('demander_acces', { p_email: email, p_nom: nom })); },
+    async myAccess(email) {
+      const rows = await run(getClient().from('acces_utilisateurs').select('*').eq('email', String(email).toLowerCase()));
+      return rows && rows[0];
+    },
+  };
 
+  const Admin = {
+    list() { return run(getClient().from('acces_utilisateurs').select('*').order('demande_le', { ascending: false })); },
+    upsert(row) { return run(getClient().from('acces_utilisateurs').upsert(row, { onConflict: 'email' }).select()); },
+    update(email, patch) { return run(getClient().from('acces_utilisateurs').update(patch).eq('email', email).select()); },
+    remove(email) { return run(getClient().from('acces_utilisateurs').delete().eq('email', email)); },
+  };
+
+  const Store = {
     async list() {
-      if (mode === 'local') return localAll();
       return run(getClient().from(cfg.TABLE).select('*').order('date_saisie', { ascending: false }).limit(5000));
     },
-
     async insert(rows) {
-      const list = Array.isArray(rows) ? rows : [rows];
-      if (mode === 'local') {
-        const all = localAll();
-        const out = list.map((r) => {
-          const row = Object.assign({ date_saisie: new Date().toISOString() }, r, { id: localNextId(all) });
-          all.push(row);
-          return row;
-        });
-        localSave(all);
-        return out;
-      }
-      return run(getClient().from(cfg.TABLE).insert(list).select());
+      return run(getClient().from(cfg.TABLE).insert(Array.isArray(rows) ? rows : [rows]).select());
     },
-
     async update(id, patch) {
-      if (mode === 'local') {
-        const all = localAll();
-        const i = all.findIndex((r) => r.id === id);
-        if (i < 0) throw new Error('Fait marquant introuvable (#' + id + ').');
-        all[i] = Object.assign({}, all[i], patch);
-        localSave(all);
-        return all[i];
-      }
       const data = await run(getClient().from(cfg.TABLE).update(patch).eq('id', id).select());
-      if (!data || !data.length) throw new Error('Mise à jour refusée pour #' + id + ' (règles RLS ?).');
+      if (!data || !data.length) throw new Error('Mise à jour refusée pour #' + id + ' (accès retiré ?).');
       return data[0];
     },
-
     async removeAll() {
-      if (mode === 'local') { localSave([]); return; }
       await run(getClient().from(cfg.TABLE).delete().gte('id', 0));
     },
   };
 
   window.FMStore = Store;
+  window.FMAuth = Auth;
+  window.FMAdmin = Admin;
 })();

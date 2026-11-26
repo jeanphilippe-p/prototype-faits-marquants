@@ -7,6 +7,21 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <!-- ========== CONNEXION ========== -->
+  <section id="authScreen" class="auth-screen" hidden>
+    <div class="auth-card">
+      <div class="brand auth-brand">
+        <span class="brand-mark" aria-hidden="true">FM</span>
+        <div>
+          <div class="brand-title">Faits Marquants</div>
+          <div class="brand-sub">Exploitation &amp; Maintenance · accès réservé</div>
+        </div>
+      </div>
+      <div id="authBody"></div>
+    </div>
+  </section>
+
+  <div id="appShell" hidden>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">FM</span>
@@ -21,10 +36,11 @@
       <button role="tab" data-role="manager">Manager N-1</button>
       <button role="tab" data-role="directeur">Directeur N</button>
       <button role="tab" data-role="lecteur">Synthèse N+1</button>
+      <button role="tab" data-role="admin" id="adminTab" hidden>Administration</button>
     </nav>
 
     <div class="top-tools">
-      <label class="identity" title="Nom utilisé dans l'historique (pas d'authentification dans le prototype)">
+      <label class="identity" title="Nom et service enregistrés dans l'historique (modifiable)">
         <span>Je suis</span>
         <input id="identity" type="text" placeholder="Nom – Service" autocomplete="off">
       </label>
@@ -32,10 +48,11 @@
       <div class="menu">
         <button id="menuBtn" class="btn ghost" aria-haspopup="true" aria-expanded="false">⋯</button>
         <div id="menuList" class="menu-list" hidden>
+          <div class="menu-user" id="menuUser"></div>
           <button data-action="refresh">Actualiser</button>
-          <button data-action="seed">Générer des données de test</button>
-          <button data-action="toggle-mode">Basculer Supabase / local</button>
-          <button data-action="wipe" class="danger">Vider toutes les données…</button>
+          <button data-action="seed" data-admin-only>Générer des données de test</button>
+          <button data-action="wipe" class="danger" data-admin-only>Vider toutes les données…</button>
+          <button data-action="logout">Se déconnecter</button>
         </div>
       </div>
     </div>
@@ -132,7 +149,31 @@
       </div>
       <article id="synthesis" class="synthesis"></article>
     </section>
+    <!-- ========== ADMINISTRATION ========== -->
+    <section class="view" data-view="admin" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Demandes d'accès en attente</h2>
+          <span class="muted small">Les personnes qui ont demandé un accès depuis l'écran de connexion.</span>
+        </div>
+        <div id="adminPending"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Adresses autorisées</h2>
+          <span class="muted small">Seules ces adresses peuvent créer un compte et voir les données. Retirer une adresse coupe l'accès immédiatement.</span>
+        </div>
+        <form id="adminAdd" class="admin-add" autocomplete="off">
+          <label>Email<input name="email" type="email" required placeholder="prenom.nom@entreprise.fr"></label>
+          <label>Nom – Service<input name="nom" placeholder="Optionnel"></label>
+          <label class="check"><input type="checkbox" name="admin"> Administrateur</label>
+          <button class="btn primary" type="submit">Autoriser cette adresse</button>
+        </form>
+        <div id="adminList"></div>
+      </div>
+    </section>
   </main>
+  </div>
 
   <dialog id="modal" class="modal">
     <div class="modal-inner" id="modalInner"></div>

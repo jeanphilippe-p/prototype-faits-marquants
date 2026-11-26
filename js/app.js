@@ -12,7 +12,9 @@
   const PRIO_RANK = { Critique: 0, Important: 1, Normal: 2 };
   const IMPORT_FIELDS = ['semaine', 'auteur', 'zone', 'categorie', 'titre', 'description', 'priorite', 'pieces_jointes'];
 
-  const ROLE_LABEL = { collab: 'Collaborateur', manager: 'Manager N-1', directeur: 'Directeur N', lecteur: 'Lecteur N+1' };
+  const ROLE_LABEL = { collab: 'Collaborateur', manager: 'Manager N-1', directeur: 'Directeur N', lecteur: 'Lecteur N+1', admin: 'Administration' };
+  // Lien de réinitialisation du mot de passe : à repérer avant que le SDK ne nettoie l'adresse.
+  const RECOVERY_LINK = /type=recovery/.test(window.location.hash);
   const DEFAULT_IDENTITY = {
     collab: 'Camille Martin – Maintenance Sud-Ouest',
     manager: 'Responsable de zone – Exploitation',
@@ -26,7 +28,11 @@
   const state = {
     rows: [],
     role: lsGet('fm_role') || 'collab',
-    identities: Object.assign({}, DEFAULT_IDENTITY, lsJson('fm_identities', {})),
+    session: null,
+    user: null,          // { email, nom }
+    isAdmin: false,
+    adminRows: [],
+    recovering: RECOVERY_LINK,
     selected: new Set(),
     filters: { semaine: '', zone: '', categorie: '', priorite: '', q: '' },
     perimetre: lsGet('fm_perimetre') || '',
@@ -41,11 +47,10 @@
 
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
-  function lsJson(k, d) { try { return JSON.parse(lsGet(k)) || d; } catch (e) { return d; } }
 
   const $ = (s, el) => (el || document).querySelector(s);
   const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
-  const me = () => (state.identities[state.role] || '').trim() || ROLE_LABEL[state.role];
+  const me = () => (state.user && (state.user.nom || state.user.email)) || 'Utilisateur';
 
   // ===================================================================
   // Utilitaires
@@ -192,6 +197,7 @@
     renderConn();
     try {
       state.rows = (await FMStore.list()) || [];
+      if (state.isAdmin) state.adminRows = (await FMAdmin.list()) || [];
       state.rows.forEach((r) => { if (!Array.isArray(r.historique)) r.historique = []; });
       state.lastError = null;
     } catch (e) {
@@ -206,22 +212,12 @@
   function renderConn() {
     const el = $('#conn');
     const banner = $('#banner');
-    if (FMStore.mode === 'local') {
-      el.className = 'conn local';
-      el.textContent = 'Mode local';
-      banner.hidden = false;
-      banner.innerHTML = '<span><strong>Mode local :</strong> les données restent dans ce navigateur et ne sont pas partagées.</span>' +
-        '<button class="btn sm" data-action="toggle-mode">Revenir sur Supabase</button>';
-      return;
-    }
     if (state.lastError) {
       el.className = 'conn err';
       el.textContent = 'Supabase : erreur';
       banner.hidden = false;
-      banner.innerHTML = '<span><strong>Supabase indisponible.</strong> ' + esc(state.lastError) +
-        '</span>' +
-        '<button class="btn sm" data-action="refresh">Réessayer</button>' +
-        '<button class="btn sm" data-action="toggle-mode">Continuer en mode local</button>';
+      banner.innerHTML = '<span><strong>Supabase indisponible.</strong> ' + esc(state.lastError) + '</span>' +
+        '<button class="btn sm" data-action="refresh">Réessayer</button>';
       return;
     }
     el.className = 'conn ok';
@@ -235,11 +231,18 @@
   function render() {
     renderConn();
     $$('.roles button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.role === state.role)));
-    $('#identity').value = state.identities[state.role] || '';
+    if (state.role === 'admin' && !state.isAdmin) state.role = 'collab';
+    $('#identity').value = me();
+    $('#adminTab').hidden = !state.isAdmin;
+    const pending = state.adminRows.filter((r) => r.statut === 'en_attente').length;
+    $('#adminTab').textContent = 'Administration' + (pending ? ' (' + pending + ')' : '');
+    $$('[data-admin-only]').forEach((b) => { b.hidden = !state.isAdmin; });
+    $('#menuUser').textContent = state.user ? state.user.email : '';
     const viewKey = state.role === 'manager' || state.role === 'directeur' ? 'board' : state.role;
     $$('.view').forEach((v) => { v.hidden = v.dataset.view !== viewKey; });
     if (state.role === 'collab') renderCollab();
     else if (state.role === 'lecteur') renderSynthesis();
+    else if (state.role === 'admin') renderAdmin();
     else renderBoard();
   }
 
@@ -1014,6 +1017,236 @@
   }
 
   // ===================================================================
+  // Authentification
+  // ===================================================================
+  let authMode = 'login';
+  let authMsg = null;   // { text, err }
+  let authEmail = '';
+
+  function showAuth(mode, msg) {
+    authMode = mode;
+    authMsg = msg || null;
+    closeModal();
+    $('#appShell').hidden = true;
+    $('#authScreen').hidden = false;
+    renderAuth();
+  }
+
+  function renderAuth() {
+    const msg = authMsg ? '<div class="auth-msg' + (authMsg.err ? ' err' : '') + '">' + esc(authMsg.text) + '</div>' : '';
+    const emailField = '<label>Email professionnel<input name="email" type="email" required autocomplete="email" value="' + esc(authEmail) + '"></label>';
+    const pwd = (name, label, ac) => '<label>' + label + '<input name="' + name + '" type="password" required minlength="8" autocomplete="' + ac + '"></label>';
+    const link = (mode, label) => '<button type="button" class="link" data-auth-mode="' + mode + '">' + label + '</button>';
+    let html = '';
+    switch (authMode) {
+      case 'login':
+        html = '<h1>Connexion</h1>' + msg +
+          '<form data-auth="login">' + emailField + pwd('password', 'Mot de passe', 'current-password') +
+          '<button class="btn primary block" type="submit">Se connecter</button></form>' +
+          '<div class="auth-links">' + link('forgot', 'Mot de passe oublié ?') + '</div>' +
+          '<div class="auth-sep"></div>' +
+          '<p class="muted small">Votre adresse a été autorisée mais vous n\'avez pas encore de compte ?</p>' +
+          '<button type="button" class="btn block" data-auth-mode="signup">Créer mon compte</button>' +
+          '<p class="muted small">Pas encore autorisé ? ' + link('request', 'Demander un accès') + '</p>';
+        break;
+      case 'signup':
+        html = '<h1>Créer mon compte</h1>' + msg +
+          '<p class="muted small">Réservé aux adresses autorisées par un administrateur. Un email de confirmation vous sera envoyé.</p>' +
+          '<form data-auth="signup"><label>Nom – Service<input name="nom" required placeholder="Ex. Camille Martin – Maintenance Sud-Ouest" autocomplete="name"></label>' +
+          emailField + pwd('password', 'Mot de passe (8 caractères minimum)', 'new-password') + pwd('password2', 'Confirmer le mot de passe', 'new-password') +
+          '<button class="btn primary block" type="submit">Créer mon compte</button></form>' +
+          '<div class="auth-links">' + link('login', '← J\'ai déjà un compte') + '</div>';
+        break;
+      case 'request':
+        html = '<h1>Demander un accès</h1>' + msg +
+          '<p class="muted small">Votre demande sera visible par les administrateurs. Une fois votre adresse validée, revenez ici et cliquez sur « Créer mon compte ».</p>' +
+          '<form data-auth="request"><label>Nom – Service<input name="nom" required autocomplete="name"></label>' + emailField +
+          '<button class="btn primary block" type="submit">Envoyer la demande</button></form>' +
+          '<div class="auth-links">' + link('login', '← Retour à la connexion') + '</div>';
+        break;
+      case 'forgot':
+        html = '<h1>Mot de passe oublié</h1>' + msg +
+          '<p class="muted small">Vous allez recevoir un lien pour choisir un nouveau mot de passe.</p>' +
+          '<form data-auth="forgot">' + emailField + '<button class="btn primary block" type="submit">Envoyer le lien</button></form>' +
+          '<div class="auth-links">' + link('login', '← Retour à la connexion') + '</div>';
+        break;
+      case 'recovery':
+        html = '<h1>Nouveau mot de passe</h1>' + msg +
+          '<form data-auth="recovery">' + pwd('password', 'Nouveau mot de passe (8 caractères minimum)', 'new-password') + pwd('password2', 'Confirmer', 'new-password') +
+          '<button class="btn primary block" type="submit">Enregistrer</button></form>';
+        break;
+      case 'info':
+        html = '<h1>C\'est noté</h1>' + msg + '<button type="button" class="btn block" data-auth-mode="login">Retour à la connexion</button>';
+        break;
+      case 'blocked':
+        html = '<h1>Accès non autorisé</h1>' + msg +
+          '<p>Votre compte <strong>' + esc(state.user ? state.user.email : '') + '</strong> existe, mais votre adresse n\'est pas (ou plus) autorisée. Contactez un administrateur.</p>' +
+          '<button type="button" class="btn block" data-action="logout">Se déconnecter</button>';
+        break;
+      case 'loading':
+        html = '<p class="muted">Connexion…</p>';
+        break;
+    }
+    $('#authBody').innerHTML = html;
+    const first = $('#authBody input:not([value]), #authBody input[value=""]') || $('#authBody input');
+    if (first) first.focus();
+  }
+
+  async function submitAuth(form) {
+    const kind = form.dataset.auth;
+    const v = (n) => (form.elements[n] ? form.elements[n].value.trim() : '');
+    const btn = form.querySelector('button[type=submit]');
+    if (form.elements.email) authEmail = v('email').toLowerCase();
+    if ((kind === 'signup' || kind === 'recovery') && form.elements.password.value !== form.elements.password2.value) {
+      authMsg = { text: 'Les deux mots de passe ne correspondent pas.', err: true }; renderAuth(); return;
+    }
+    btn.disabled = true;
+    try {
+      if (kind === 'login') {
+        const data = await FMAuth.signIn(authEmail, form.elements.password.value);
+        await handleSession(data.session);
+      } else if (kind === 'signup') {
+        const data = await FMAuth.signUp(authEmail, form.elements.password.value, v('nom'));
+        if (data.session) await handleSession(data.session);
+        else showAuth('info', { text: 'Compte créé. Un email de confirmation a été envoyé à ' + authEmail + ' : cliquez sur le lien qu\'il contient, puis connectez-vous.' });
+      } else if (kind === 'request') {
+        await FMAuth.requestAccess(authEmail, v('nom'));
+        showAuth('info', { text: 'Demande enregistrée pour ' + authEmail + '. Dès qu\'un administrateur l\'aura validée, revenez ici et cliquez sur « Créer mon compte ».' });
+      } else if (kind === 'forgot') {
+        await FMAuth.resetPassword(authEmail);
+        showAuth('info', { text: 'Si un compte existe pour ' + authEmail + ', un lien de réinitialisation vient d\'être envoyé.' });
+      } else if (kind === 'recovery') {
+        await FMAuth.updatePassword(form.elements.password.value);
+        state.recovering = false;
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+        toast('Mot de passe mis à jour.');
+        await handleSession(await FMAuth.session());
+      }
+    } catch (e) {
+      authMsg = { text: e.message, err: true };
+      renderAuth();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function handleSession(session) {
+    if (!session) { showAuth('login'); return; }
+    state.session = session;
+    const meta = session.user.user_metadata || {};
+    state.user = { email: String(session.user.email || '').toLowerCase(), nom: meta.nom || '' };
+    let access = null;
+    try { access = await FMAuth.myAccess(state.user.email); }
+    catch (e) { showAuth('blocked', { text: e.message, err: true }); return; }
+    if (!access || access.statut !== 'autorise') { showAuth('blocked'); return; }
+    state.isAdmin = !!access.est_admin;
+    if (!state.user.nom) state.user.nom = access.nom || state.user.email;
+    $('#authScreen').hidden = true;
+    $('#appShell').hidden = false;
+    render();
+    await load();
+  }
+
+  function enterLoggedOut() {
+    Object.assign(state, { session: null, user: null, isAdmin: false, adminRows: [], rows: [], lastError: null });
+    state.selected.clear();
+    showAuth('login');
+  }
+
+  async function startAuth() {
+    try {
+      FMAuth.onChange((event) => {
+        // Pas d'appel Supabase directement dans ce rappel (recommandation du SDK).
+        if (event === 'PASSWORD_RECOVERY') { state.recovering = true; setTimeout(() => showAuth('recovery'), 0); }
+        if (event === 'SIGNED_OUT' && state.session) setTimeout(enterLoggedOut, 0);
+      });
+      showAuth('loading');
+      const session = await FMAuth.session();
+      if (state.recovering && session) { showAuth('recovery'); return; }
+      if (session) await handleSession(session);
+      else showAuth('login');
+    } catch (e) {
+      showAuth('login', { text: e.message, err: true });
+    }
+  }
+
+  function bindAuth() {
+    $('#authBody').addEventListener('submit', (e) => { e.preventDefault(); submitAuth(e.target); });
+    $('#authBody').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-auth-mode]');
+      if (!b) return;
+      const email = $('#authBody input[name=email]');
+      if (email) authEmail = email.value.trim().toLowerCase();
+      showAuth(b.dataset.authMode);
+    });
+    $('#adminAdd').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const email = f.email.value.trim().toLowerCase();
+      try {
+        await FMAdmin.upsert({ email, nom: f.nom.value.trim() || null, statut: 'autorise', est_admin: f.admin.checked, decide_par: me(), decide_le: new Date().toISOString() });
+        f.reset();
+        toast(email + ' est autorisé(e). La personne peut maintenant créer son compte.');
+        await refreshAdmin();
+      } catch (err) { toast(err.message, true); }
+    });
+    document.addEventListener('change', async (e) => {
+      const email = e.target.dataset && e.target.dataset.adminToggle;
+      if (!email) return;
+      if (email === state.user.email && !e.target.checked) { e.target.checked = true; toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.', true); return; }
+      try { await FMAdmin.update(email, { est_admin: e.target.checked, decide_par: me(), decide_le: new Date().toISOString() }); toast('Droits mis à jour pour ' + email + '.'); }
+      catch (err) { toast(err.message, true); }
+      await refreshAdmin();
+    });
+  }
+
+  // ===================================================================
+  // Administration des accès
+  // ===================================================================
+  async function refreshAdmin() {
+    try { state.adminRows = (await FMAdmin.list()) || []; } catch (e) { toast(e.message, true); }
+    render();
+  }
+
+  function renderAdmin() {
+    const rows = state.adminRows;
+    const pending = rows.filter((r) => r.statut === 'en_attente');
+    const allowed = rows.filter((r) => r.statut === 'autorise').sort((a, b) => a.email.localeCompare(b.email));
+    const refused = rows.filter((r) => r.statut === 'refuse');
+    const btn = (action, email, label, cls) => '<button type="button" class="btn sm ' + (cls || '') + '" data-action="' + action + '" data-email="' + esc(email) + '">' + label + '</button>';
+    $('#adminPending').innerHTML = pending.length
+      ? '<table class="admin-table"><thead><tr><th>Email</th><th>Nom – Service</th><th>Demandé le</th><th></th></tr></thead><tbody>' +
+        pending.map((r) => '<tr><td>' + esc(r.email) + '</td><td>' + esc(r.nom || '') + '</td><td>' + fmtDate(r.demande_le) + '</td><td class="right">' +
+          btn('admin-refuse', r.email, 'Refuser', 'danger') + ' ' + btn('admin-approve', r.email, '✓ Autoriser', 'ok') + '</td></tr>').join('') + '</tbody></table>'
+      : '<div class="empty">Aucune demande en attente.</div>';
+    $('#adminList').innerHTML =
+      '<table class="admin-table"><thead><tr><th>Email</th><th>Nom – Service</th><th>Admin</th><th>Validé par</th><th></th></tr></thead><tbody>' +
+      allowed.map((r) => '<tr><td>' + esc(r.email) + (r.email === state.user.email ? ' <span class="chip">vous</span>' : '') + '</td><td>' + esc(r.nom || '') + '</td>' +
+        '<td><input type="checkbox" data-admin-toggle="' + esc(r.email) + '"' + (r.est_admin ? ' checked' : '') + ' aria-label="Administrateur"></td>' +
+        '<td class="muted small">' + esc(r.decide_par || '') + (r.decide_le ? ' · ' + fmtDate(r.decide_le) : '') + '</td>' +
+        '<td class="right">' + (r.email === state.user.email ? '' : btn('admin-remove', r.email, 'Retirer l\'accès', 'danger')) + '</td></tr>').join('') +
+      '</tbody></table>' +
+      (refused.length ? '<h3 class="admin-sub">Demandes refusées</h3><table class="admin-table"><tbody>' +
+        refused.map((r) => '<tr><td>' + esc(r.email) + '</td><td>' + esc(r.nom || '') + '</td><td class="muted small">' + esc(r.decide_par || '') + '</td><td class="right">' +
+          btn('admin-remove', r.email, 'Supprimer', 'ghost') + ' ' + btn('admin-approve', r.email, 'Autoriser', 'ok') + '</td></tr>').join('') + '</tbody></table>' : '');
+  }
+
+  async function adminDecide(email, statut) {
+    try {
+      await FMAdmin.update(email, { statut, decide_par: me(), decide_le: new Date().toISOString() });
+      toast(statut === 'autorise' ? email + ' est autorisé(e). Prévenez la personne qu\'elle peut créer son compte.' : 'Demande de ' + email + ' refusée.');
+    } catch (e) { toast(e.message, true); }
+    await refreshAdmin();
+  }
+
+  function adminRemove(email) {
+    confirmModal('Retirer l\'accès de ' + email + ' ?', 'La personne ne pourra plus voir ni modifier les faits marquants, même si elle a déjà un compte. Les faits marquants qu\'elle a saisis sont conservés.', 'Retirer l\'accès', true, async () => {
+      try { await FMAdmin.remove(email); toast('Accès retiré pour ' + email + '.'); } catch (e) { toast(e.message, true); }
+      await refreshAdmin();
+    });
+  }
+
+  // ===================================================================
   // Événements
   // ===================================================================
   function bind() {
@@ -1026,9 +1259,11 @@
       render();
     }));
 
-    $('#identity').addEventListener('change', (e) => {
-      state.identities[state.role] = e.target.value.trim();
-      lsSet('fm_identities', JSON.stringify(state.identities));
+    $('#identity').addEventListener('change', async (e) => {
+      const nom = e.target.value.trim();
+      if (!nom || !state.user) { render(); return; }
+      try { await FMAuth.updateName(nom); state.user.nom = nom; toast('Nom enregistré sur votre compte.'); }
+      catch (err) { toast(err.message, true); }
       render();
     });
 
@@ -1111,14 +1346,12 @@
         switch (a) {
           case 'refresh': await load(); break;
           case 'seed': await doSeed(); break;
-          case 'toggle-mode':
-            FMStore.setMode(FMStore.mode === 'local' ? 'supabase' : 'local');
-            state.lastError = null;
-            toast(FMStore.mode === 'local' ? 'Mode local activé (données dans ce navigateur).' : 'Connexion à Supabase…');
-            await load();
-            break;
+          case 'logout': await FMAuth.signOut(); enterLoggedOut(); break;
+          case 'admin-approve': await adminDecide(action.dataset.email, 'autorise'); break;
+          case 'admin-refuse': await adminDecide(action.dataset.email, 'refuse'); break;
+          case 'admin-remove': adminRemove(action.dataset.email); break;
           case 'wipe':
-            confirmModal('Vider toutes les données ?', 'Tous les faits marquants de la source actuelle (<strong>' + (FMStore.mode === 'local' ? 'navigateur' : 'Supabase') + '</strong>) seront définitivement supprimés.', 'Tout supprimer', true, async () => {
+            confirmModal('Vider toutes les données ?', 'Tous les faits marquants de la base Supabase seront <strong>définitivement supprimés</strong>, pour tous les utilisateurs.', 'Tout supprimer', true, async () => {
               try { await FMStore.removeAll(); state.rows = []; state.selected.clear(); toast('Données supprimées.'); render(); } catch (err) { toast(err.message, true); }
             });
             break;
@@ -1175,7 +1408,7 @@
 
     // Rafraîchissement automatique (multi-utilisateurs) toutes les 30 s
     setInterval(() => {
-      if (document.visibilityState === 'visible' && FMStore.mode === 'supabase' && !modal().open && !state.lastError) load(true);
+      if (document.visibilityState === 'visible' && state.session && !modal().open && !state.lastError && state.role !== 'admin') load(true);
     }, 30000);
   }
 
@@ -1184,6 +1417,6 @@
   // ===================================================================
   setupForm();
   bind();
-  render();
-  load();
+  bindAuth();
+  startAuth();
 })();
